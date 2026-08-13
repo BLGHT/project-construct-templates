@@ -65,6 +65,9 @@
           - wordlists # provides /usr/share/wordlists/rockyou.txt.gz
           - pocl-opencl-icd # CPU OpenCL runtime so hashcat has a compute backend (no GPU)
         state: present
+        # kali-rolling can want to step a base-image package down a version;
+        # apt refuses that non-interactively without --allow-downgrades.
+        allow_downgrade: true
       register: result
       retries: 2
       until: result.failed == false

@@ -45,6 +45,10 @@
           - python3
           - python3-pyfakefs  # runtime dependency of miniprint
         state: present
+        # CUPS pulls in perl via ghostscript/cups-filters; on the point-release
+        # base image this steps perl-base down one version, which apt refuses
+        # non-interactively without --allow-downgrades.
+        allow_downgrade: true
 
     # --- CUPS: real IPP/LPD print server with a shared virtual PDF queue -------
     - name: Allow remote administration and printer sharing in CUPS
