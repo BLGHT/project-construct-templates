@@ -40,37 +40,28 @@
           python3 setup.py install >> /tmp/kali-install.log 2>&1
       when: apt_result.failed
 
+    # Installed via apt-get directly rather than the apt module: kali-rolling can
+    # want to step a base-image package down a version, which apt refuses
+    # non-interactively without --allow-downgrades, and Ludus's ansible does not
+    # pass the module's allow_downgrade option through to apt-get - so we add the
+    # flag explicitly. kali-desktop-xfce/kali-linux-core pull in the bulk here.
     - name: Install packages
       become: true
-      ansible.builtin.apt:
-        name:
-          - git
-          - python3-pip
-          - jq
-          - curl
-          - dbus
-          - dbus-user-session
-          - dbus-x11
-          - vim
-          - swapspace # helps with machines with low RAM
-          - kali-defaults
-          - kali-root-login
-          - desktop-base
-          - wget
-          - kali-linux-core
-          - kali-desktop-xfce
-          # - kali-linux-default # This takes forever (2+ hours) and really slows down template building
-          - hashcat
-          - john
-          - wordlists # provides /usr/share/wordlists/rockyou.txt.gz
-          - pocl-opencl-icd # CPU OpenCL runtime so hashcat has a compute backend (no GPU)
-        state: present
-        # kali-rolling can want to step a base-image package down a version;
-        # apt refuses that non-interactively without --allow-downgrades.
-        allow_downgrade: true
+      ansible.builtin.command:
+        cmd: >-
+          apt-get install -y
+          -o Dpkg::Options::=--force-confold
+          --allow-downgrades
+          git python3-pip jq curl dbus dbus-user-session dbus-x11 vim swapspace
+          kali-defaults kali-root-login desktop-base wget kali-linux-core
+          kali-desktop-xfce hashcat john wordlists pocl-opencl-icd
+      environment:
+        DEBIAN_FRONTEND: noninteractive
       register: result
       retries: 2
-      until: result.failed == false
+      delay: 5
+      until: result.rc == 0
+      changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in result.stdout"
 
     - name: Extract the rockyou.txt wordlist
       become: true

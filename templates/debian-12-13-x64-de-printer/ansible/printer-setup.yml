@@ -31,24 +31,24 @@
         update_cache: true
         cache_valid_time: 3600
 
+    # Installed via apt-get directly rather than the apt module: CUPS pulls in
+    # perl through ghostscript/cups-filters, which steps perl-base down one
+    # version on the point-release base image. apt refuses that downgrade
+    # non-interactively without --allow-downgrades, and Ludus's ansible does not
+    # pass the module's allow_downgrade option through to apt-get - so we add the
+    # flag explicitly here.
     - name: Install printer-emulation packages
-      ansible.builtin.apt:
-        name:
-          - cups              # IPP print server + web admin on 631
-          - cups-bsd          # provides cups-lpd for the LPD/515 service
-          - cups-pdf          # virtual "print to PDF" backend for the queue
-          - snmpd             # SNMP agent (printer identity / discovery)
-          - snmp              # snmpwalk etc. for local verification
-          - nginx-light       # fake printer web control panel on 80
-          - avahi-daemon      # mDNS/Bonjour so the printer is discoverable
-          - git
-          - python3
-          - python3-pyfakefs  # runtime dependency of miniprint
-        state: present
-        # CUPS pulls in perl via ghostscript/cups-filters; on the point-release
-        # base image this steps perl-base down one version, which apt refuses
-        # non-interactively without --allow-downgrades.
-        allow_downgrade: true
+      ansible.builtin.command:
+        cmd: >-
+          apt-get install -y
+          -o Dpkg::Options::=--force-confold
+          --allow-downgrades
+          cups cups-bsd cups-pdf snmpd snmp nginx-light avahi-daemon
+          git python3 python3-pyfakefs
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: printer_pkgs
+      changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in printer_pkgs.stdout"
 
     # --- CUPS: real IPP/LPD print server with a shared virtual PDF queue -------
     - name: Allow remote administration and printer sharing in CUPS
