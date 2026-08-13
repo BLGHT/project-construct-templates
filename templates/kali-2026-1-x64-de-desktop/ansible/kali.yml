@@ -40,28 +40,93 @@
           python3 setup.py install >> /tmp/kali-install.log 2>&1
       when: apt_result.failed
 
-    # Installed via apt-get directly rather than the apt module: kali-rolling can
-    # want to step a base-image package down a version, which apt refuses
-    # non-interactively without --allow-downgrades, and Ludus's ansible does not
-    # pass the module's allow_downgrade option through to apt-get - so we add the
-    # flag explicitly. kali-desktop-xfce/kali-linux-core pull in the bulk here.
+    # Installed via apt-get directly rather than the apt module so that
+    # --allow-downgrades is guaranteed to reach the command line, and split into
+    # small named groups on purpose: the packer log truncates long error output,
+    # but task names always survive, so a failure names the group that broke.
+    # The rescue block then prints a short, log-safe error summary.
     - name: Install packages
       become: true
-      ansible.builtin.command:
-        cmd: >-
-          apt-get install -y
-          -o Dpkg::Options::=--force-confold
-          --allow-downgrades
-          git python3-pip jq curl dbus dbus-user-session dbus-x11 vim swapspace
-          kali-defaults kali-root-login desktop-base wget kali-linux-core
-          kali-desktop-xfce hashcat john wordlists pocl-opencl-icd
-      environment:
-        DEBIAN_FRONTEND: noninteractive
-      register: result
-      retries: 2
-      delay: 5
-      until: result.rc == 0
-      changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in result.stdout"
+      block:
+        - name: Install packages - base tools
+          ansible.builtin.command:
+            cmd: >-
+              apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
+              git python3-pip jq curl vim wget swapspace
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pkg_base
+          retries: 2
+          delay: 5
+          until: pkg_base.rc == 0
+          changed_when: "'0 newly installed' not in pkg_base.stdout"
+
+        - name: Install packages - dbus
+          ansible.builtin.command:
+            cmd: >-
+              apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
+              dbus dbus-user-session dbus-x11
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pkg_dbus
+          retries: 2
+          delay: 5
+          until: pkg_dbus.rc == 0
+          changed_when: "'0 newly installed' not in pkg_dbus.stdout"
+
+        - name: Install packages - password cracking (hashcat, john, rockyou)
+          ansible.builtin.command:
+            cmd: >-
+              apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
+              hashcat john wordlists pocl-opencl-icd
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pkg_crack
+          retries: 2
+          delay: 5
+          until: pkg_crack.rc == 0
+          changed_when: "'0 newly installed' not in pkg_crack.stdout"
+
+        - name: Install packages - kali base metapackages
+          ansible.builtin.command:
+            cmd: >-
+              apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
+              kali-defaults kali-root-login desktop-base
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pkg_kalibase
+          retries: 2
+          delay: 5
+          until: pkg_kalibase.rc == 0
+          changed_when: "'0 newly installed' not in pkg_kalibase.stdout"
+
+        # Slowest step by far - kali-linux-core plus the XFCE desktop.
+        - name: Install packages - kali core and XFCE desktop
+          ansible.builtin.command:
+            cmd: >-
+              apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
+              kali-linux-core kali-desktop-xfce
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pkg_desktop
+          retries: 2
+          delay: 5
+          until: pkg_desktop.rc == 0
+          changed_when: "'0 newly installed' not in pkg_desktop.stdout"
+
+      rescue:
+        # Print a compact summary so the real reason survives log truncation.
+        - name: APT FAILURE - last error lines
+          ansible.builtin.debug:
+            msg: "{{ (ansible_failed_result.stderr_lines | default([]))[-6:] }}"
+
+        - name: APT FAILURE - last output lines
+          ansible.builtin.debug:
+            msg: "{{ (ansible_failed_result.stdout_lines | default([]))[-12:] }}"
+
+        - name: Stop the build after reporting the apt failure
+          ansible.builtin.fail:
+            msg: "apt install failed in task: {{ ansible_failed_task.name | default('unknown') }}"
 
     - name: Extract the rockyou.txt wordlist
       become: true
