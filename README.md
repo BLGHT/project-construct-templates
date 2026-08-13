@@ -101,6 +101,55 @@ Default credentials match the upstream templates:
 | `win2019-server-x64-de-no-security-updates` | Windows Server | 2019 Eval (17763.737) | BIOS | de | No security updates |
 | `win2022-server-x64-de` | Windows Server | 2022 Eval | BIOS | de | |
 
+## Unordinary devices
+
+Templates that emulate non-PC network devices instead of a plain OS. Each one is a normal Linux image with extra services layered on top, so IP/VLAN placement is left to the range config like any other template.
+
+### Available
+
+- **`debian-12-13-x64-de-printer`** — Debian 12 that emulates an HP LaserJet network printer. Runs miniprint (raw/PJL on 9100), CUPS (IPP on 631, LPD on 515), snmpd, and a static nginx status page. Details in [Emulated printer](#emulated-printer-debian-12-13-x64-de-printer) below.
+
+### Further development
+
+Not implemented yet:
+
+- **IP camera** — Debian with a fake RTSP stream (e.g. [mediamtx](https://github.com/bluenviron/mediamtx)) and a web login page. Stands in for an IoT camera.
+- **ICS/PLC (conpot)** — Debian running [conpot](https://github.com/mushorg/conpot), which speaks Modbus (502), S7comm, and SNMP. Stands in for an industrial controller.
+
+## Emulated printer (`debian-12-13-x64-de-printer`)
+
+A Debian 12 VM that presents itself as an **HP LaserJet** network printer, built as an attack/enumeration target for a range. It is provisioned by `ansible/printer-setup.yml` and exposes a coherent printer identity across the usual printer services:
+
+| Service | Port | Engine | Purpose |
+|:---|:---:|:---|:---|
+| Raw / JetDirect (PJL, PostScript) | 9100/tcp | [`miniprint`](https://github.com/sa7mon/miniprint) systemd service | Core target — PRET connects here; emulates a PJL virtual filesystem |
+| IPP + web admin | 631/tcp | CUPS with a shared virtual PDF queue | Real print server + admin UI; accepts jobs |
+| LPD | 515/tcp | CUPS `cups-lpd` (systemd socket) | Legacy print protocol / PRET LPD transport |
+| SNMP | 161/udp | `snmpd` with a printer `sysDescr`/identity | Device fingerprinting and discovery |
+| Fake control panel | 80/tcp | nginx static status/login page | HTTP recon realism (`http-title`) |
+
+Default credentials are the Debian base `debian` / `debian`. All services bind to the range network on purpose — this template is meant for isolated lab use only.
+
+**Attacking it from Kali** (PRET is the canonical tool):
+
+```bash
+git clone https://github.com/RUB-NDS/PRET
+python3 PRET/pret.py <printer-ip> pjl     # PJL over port 9100 (miniprint)
+python3 PRET/pret.py <printer-ip> ps      # PostScript
+```
+
+`nmap -p 9100,515,631,80,161 -sU -sV <printer-ip>` will fingerprint the printer services; the CUPS admin UI is reachable at `https://<printer-ip>:631/`.
+
+### Registering the printer in Active Directory
+
+The printer device itself does **not** join the domain — network printers never do. It appears in AD only when a **domain-joined Windows print server** shares it and publishes it to the directory. Do this on a Windows print-server VM in the range (not on this template):
+
+1. **Add the printer:** *Settings → Printers → Add a printer → Add a local printer with manual settings → Create a new port → Standard TCP/IP Port*, and point it at this VM's IP. Windows probes the device over **SNMP** during this step — because `snmpd` is running, it is detected as a real device and a proper port is created (RAW port 9100, or select LPR for 515). Install any PostScript/PCL driver (e.g. a generic "HP LaserJet PS" driver).
+2. **Share it:** open the printer's *Properties → Sharing*, tick **Share this printer**, and tick **List in the directory**. This publishes a `printQueue` object into Active Directory.
+3. **Find / deploy it:** users can now locate it via *Add Printer → Search the directory*, and admins can push it with Group Policy (*Print Management → Deploy with Group Policy*).
+
+This is exactly how printers are managed in real AD environments, which is why the template only needs to speak the print protocols and answer SNMP — the AD object lives on the print server.
+
 ## Directory layout
 
 ```

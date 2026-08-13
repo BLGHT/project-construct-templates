@@ -1,0 +1,288 @@
+---
+# Turns the Debian 12 base into an emulated network-printer attack target for a
+# Ludus range. Exposes a coherent "HP LaserJet" persona across several printer
+# services so it can be discovered, enumerated and attacked from a Kali box, and
+# published into Active Directory by a Windows print server.
+#
+#   9100/tcp  raw / PJL / PostScript   -> miniprint (PRET-compatible)
+#   631/tcp   IPP + web admin          -> CUPS (real, shared virtual PDF queue)
+#   515/tcp   LPD                      -> CUPS cups-lpd via a systemd socket
+#   161/udp   SNMP                     -> snmpd with a printer sysDescr/identity
+#   80/tcp    fake printer web panel   -> nginx static status/login page
+#
+# Everything is intentionally reachable within the range NAT network - that is
+# the lab scenario. Nothing here is meant to be exposed to a real network.
+- name: Configure Debian 12 as an emulated network printer (attack target)
+  hosts: all
+  become: true
+  vars:
+    printer_persona: "HP LaserJet 4250"
+    printer_queue: "HP_LaserJet_4250"
+    printer_location: "Buero 1.OG - Flur"
+    printer_contact: "it-support@lab.local"
+    printer_serial: "CNBW1234567"
+    miniprint_repo: "https://github.com/sa7mon/miniprint.git"
+    miniprint_dir: /opt/miniprint
+    miniprint_log_dir: /var/log/miniprint
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install printer-emulation packages
+      ansible.builtin.apt:
+        name:
+          - cups              # IPP print server + web admin on 631
+          - cups-bsd          # provides cups-lpd for the LPD/515 service
+          - cups-pdf          # virtual "print to PDF" backend for the queue
+          - snmpd             # SNMP agent (printer identity / discovery)
+          - snmp              # snmpwalk etc. for local verification
+          - nginx-light       # fake printer web control panel on 80
+          - avahi-daemon      # mDNS/Bonjour so the printer is discoverable
+          - git
+          - python3
+          - python3-pyfakefs  # runtime dependency of miniprint
+        state: present
+
+    # --- CUPS: real IPP/LPD print server with a shared virtual PDF queue -------
+    - name: Allow remote administration and printer sharing in CUPS
+      ansible.builtin.command:
+        cmd: cupsctl --remote-admin --remote-any --share-printers
+      changed_when: false
+
+    - name: Check whether the virtual printer queue already exists
+      ansible.builtin.command:
+        cmd: "lpstat -p {{ printer_queue }}"
+      register: lpstat_check
+      changed_when: false
+      failed_when: false
+
+    - name: Locate a cups-pdf PPD (optional print-to-PDF driver)
+      ansible.builtin.find:
+        paths: /usr/share/ppd/cups-pdf
+        patterns: "*.ppd"
+      register: cupspdf_ppd
+
+    - name: Create the shared virtual printer queue
+      ansible.builtin.command:
+        cmd: >-
+          lpadmin -p {{ printer_queue }} -E -v cups-pdf:/
+          -D "{{ printer_persona }}" -L "{{ printer_location }}"
+          -o printer-is-shared=true
+          {{ ('-P ' ~ cupspdf_ppd.files[0].path) if (cupspdf_ppd.matched | int) > 0 else '' }}
+      when: lpstat_check.rc != 0
+      notify: Restart cups
+
+    # --- LPD (515) via a systemd socket wrapping cups-lpd ----------------------
+    - name: Deploy cups-lpd systemd socket
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cups-lpd.socket
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=CUPS LPD Protocol Listener Socket
+
+          [Socket]
+          ListenStream=515
+          Accept=yes
+
+          [Install]
+          WantedBy=sockets.target
+      notify: Reload systemd
+
+    - name: Deploy cups-lpd systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cups-lpd@.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=CUPS LPD Per-Connection Server
+
+          [Service]
+          ExecStart=/usr/lib/cups/daemon/cups-lpd
+          StandardInput=socket
+          StandardError=journal
+      notify: Reload systemd
+
+    # --- SNMP (161): printer identity for discovery / recon --------------------
+    - name: Deploy printer SNMP configuration
+      ansible.builtin.copy:
+        dest: /etc/snmp/snmpd.conf
+        mode: "0600"
+        content: |
+          # Emulated printer SNMP agent - lab use only.
+          agentaddress udp:161,udp6:[::1]:161
+
+          # Read-only community, reachable from the range network.
+          rocommunity public default
+
+          # HP-style printer identity presented to management tools / scanners.
+          sysDescr    HP ETHERNET MULTI-ENVIRONMENT,ROM none,JETDIRECT,JETDIRECT EX,{{ printer_persona }}
+          sysObjectID 1.3.6.1.4.1.11.2.3.9.1
+          sysName     printer
+          sysLocation {{ printer_location }}
+          sysContact  {{ printer_contact }}
+          sysServices 72
+      notify: Restart snmpd
+
+    # --- Fake nginx printer control panel (80) ---------------------------------
+    - name: Remove the default nginx landing page
+      ansible.builtin.file:
+        path: /var/www/html/index.nginx-debian.html
+        state: absent
+
+    - name: Deploy the fake printer control panel
+      ansible.builtin.copy:
+        dest: /var/www/html/index.html
+        mode: "0644"
+        content: |
+          <!doctype html>
+          <html lang="de">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>{{ printer_persona }}</title>
+            <style>
+              body { font-family: Arial, Helvetica, sans-serif; margin: 0; color: #222; background: #f2f2f2; }
+              header { background: #0096d6; color: #fff; padding: 14px 24px; font-size: 20px; font-weight: bold; }
+              .wrap { max-width: 760px; margin: 24px auto; background: #fff; border: 1px solid #ccc; }
+              .wrap h2 { background: #e6e6e6; margin: 0; padding: 10px 16px; font-size: 15px; }
+              table { width: 100%; border-collapse: collapse; }
+              td { padding: 8px 16px; border-bottom: 1px solid #eee; font-size: 14px; }
+              td.k { color: #555; width: 40%; }
+              .status-ok { color: #1a7f1a; font-weight: bold; }
+              .bar { background: #ddd; height: 14px; border-radius: 3px; overflow: hidden; }
+              .bar > span { display: block; height: 100%; background: #0096d6; }
+              form { padding: 16px; }
+              input { padding: 6px 8px; margin: 4px 0; width: 200px; }
+              .btn { background: #0096d6; color: #fff; border: 0; cursor: pointer; }
+              footer { text-align: center; color: #888; font-size: 12px; margin: 18px; }
+            </style>
+          </head>
+          <body>
+            <header>{{ printer_persona }} &nbsp;&middot;&nbsp; Embedded Web Server</header>
+
+            <div class="wrap">
+              <h2>Gerätestatus</h2>
+              <table>
+                <tr><td class="k">Status</td><td><span class="status-ok">Bereit</span></td></tr>
+                <tr><td class="k">Modell</td><td>{{ printer_persona }}</td></tr>
+                <tr><td class="k">Hostname</td><td>printer</td></tr>
+                <tr><td class="k">Seriennummer</td><td>{{ printer_serial }}</td></tr>
+                <tr><td class="k">Standort</td><td>{{ printer_location }}</td></tr>
+                <tr><td class="k">Kontakt</td><td>{{ printer_contact }}</td></tr>
+                <tr><td class="k">Seitenzähler</td><td>48211</td></tr>
+                <tr><td class="k">Toner Schwarz</td><td><div class="bar"><span style="width:63%"></span></div></td></tr>
+              </table>
+            </div>
+
+            <div class="wrap">
+              <h2>Administrator-Anmeldung</h2>
+              <form action="#" method="post" autocomplete="off">
+                <div>Benutzername</div>
+                <input type="text" name="username" value="admin">
+                <div>Kennwort</div>
+                <input type="password" name="password">
+                <div><input class="btn" type="submit" value="Anmelden"></div>
+              </form>
+            </div>
+
+            <footer>HP Embedded Web Server</footer>
+          </body>
+          </html>
+
+    # --- miniprint: raw / PJL honeypot on 9100 (PRET-compatible) ----------------
+    - name: Create the miniprint service account
+      ansible.builtin.user:
+        name: miniprint
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ miniprint_dir }}"
+        create_home: false
+
+    - name: Clone miniprint
+      ansible.builtin.git:
+        repo: "{{ miniprint_repo }}"
+        dest: "{{ miniprint_dir }}"
+        version: master
+        depth: 1
+      notify: Restart miniprint
+
+    - name: Create the miniprint log directory
+      ansible.builtin.file:
+        path: "{{ miniprint_log_dir }}"
+        state: directory
+        owner: miniprint
+        group: miniprint
+        mode: "0755"
+
+    - name: Give miniprint ownership of its working tree (uploads/virtual fs)
+      ansible.builtin.file:
+        path: "{{ miniprint_dir }}"
+        state: directory
+        owner: miniprint
+        group: miniprint
+        recurse: true
+
+    - name: Deploy the miniprint systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/miniprint.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=miniprint - printer honeypot / raw print target on 9100
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=miniprint
+          WorkingDirectory={{ miniprint_dir }}
+          ExecStart=/usr/bin/python3 {{ miniprint_dir }}/server.py -b 0.0.0.0 -l {{ miniprint_log_dir }}/miniprint.log
+          Restart=on-failure
+          RestartSec=5s
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart miniprint
+
+    # --- Enable everything on boot ---------------------------------------------
+    - name: Flush handlers so units exist before enabling
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start printer services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - cups
+        - snmpd
+        - nginx
+        - avahi-daemon
+        - cups-lpd.socket
+        - miniprint
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart cups
+      ansible.builtin.service:
+        name: cups
+        state: restarted
+
+    - name: Restart snmpd
+      ansible.builtin.service:
+        name: snmpd
+        state: restarted
+
+    - name: Restart miniprint
+      ansible.builtin.service:
+        name: miniprint
+        state: restarted
