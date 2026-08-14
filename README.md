@@ -97,9 +97,22 @@ Default credentials match the upstream templates:
 | `win11-22h2-x64-de-enterprise` | Windows 11 | 22H2 Enterprise Eval | UEFI (OVMF) | de | TPM/SecureBoot bypass |
 | `win11-23h2-x64-de-enterprise` | Windows 11 | 23H2 Enterprise Eval | UEFI (OVMF) | de | TPM/SecureBoot bypass |
 | `win2016-server-x64-de` | Windows Server | 2016 Eval | BIOS | de | |
+| `win2016-server-x64-de-no-security-updates` | Windows Server | 2016 Eval (14393.0) | BIOS | de | No security updates |
 | `win2019-server-x64-de` | Windows Server | 2019 Eval | BIOS | de | |
 | `win2019-server-x64-de-no-security-updates` | Windows Server | 2019 Eval (17763.737) | BIOS | de | No security updates |
 | `win2022-server-x64-de` | Windows Server | 2022 Eval | BIOS | de | |
+
+### Unpatched Windows variants
+
+The `*-no-security-updates` templates install from original release media and
+skip the Windows Update step, so the resulting VM keeps the vulnerabilities of
+its release date - useful as a target. They also build far faster: patching a
+Windows Server 2016 image applies years of cumulative updates and can take
+several hours, which is why the plain `win2016-server-x64-de` build looks like
+it has hung when it is merely slow.
+
+Windows Update is disabled inside the guest (`scripts/disablewinupdate.bat`), so
+these VMs do not quietly patch themselves after first boot.
 
 ## Unordinary devices
 
