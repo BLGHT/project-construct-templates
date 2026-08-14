@@ -37,12 +37,18 @@
     # non-interactively without --allow-downgrades, and Ludus's ansible does not
     # pass the module's allow_downgrade option through to apt-get - so we add the
     # flag explicitly here.
+    #
+    # ca-certificates is listed on purpose: the preseed does not install it and
+    # sets install-recommends false, so a fresh VM has no CA bundle at all. apt
+    # itself is fine (HTTP plus signed metadata), but cloning miniprint over
+    # HTTPS later fails with "server certificate verification failed".
     - name: Install printer-emulation packages
       ansible.builtin.command:
         cmd: >-
           apt-get install -y
           -o Dpkg::Options::=--force-confold
           --allow-downgrades
+          ca-certificates
           cups cups-bsd cups-pdf snmpd snmp nginx-light avahi-daemon
           git python3 python3-pyfakefs
       environment:
