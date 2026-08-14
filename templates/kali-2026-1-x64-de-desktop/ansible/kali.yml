@@ -74,11 +74,15 @@
           until: pkg_dbus.rc == 0
           changed_when: "'0 newly installed' not in pkg_dbus.stdout"
 
+        # No OpenCL ICD is listed explicitly: kali-rolling has no
+        # pocl-opencl-icd package, and naming it fails the whole install with
+        # "has no installation candidate". hashcat depends on the virtual
+        # opencl-icd, so apt pulls a provider in by itself.
         - name: Install packages - password cracking (hashcat, john, rockyou)
           ansible.builtin.command:
             cmd: >-
               apt-get install -y -o Dpkg::Options::=--force-confold --allow-downgrades
-              hashcat john wordlists pocl-opencl-icd
+              hashcat john wordlists
           environment:
             DEBIAN_FRONTEND: noninteractive
           register: pkg_crack

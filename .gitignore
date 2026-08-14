@@ -1,0 +1,7 @@
+# Local ansible/docker debugging harness - not part of the template registry.
+docker-debug/
+
+# Packer / build leftovers
+*.log
+packer_cache/
+.packer.d/

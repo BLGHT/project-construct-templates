@@ -51,6 +51,19 @@
       changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in printer_pkgs.stdout"
 
     # --- CUPS: real IPP/LPD print server with a shared virtual PDF queue -------
+    # cupsctl and lpadmin talk to cupsd over its socket, so the daemon has to be
+    # up first - otherwise they fail with "Unable to connect to server".
+    - name: Ensure CUPS is running before configuring it
+      ansible.builtin.service:
+        name: cups
+        state: started
+        enabled: true
+
+    - name: Wait for the CUPS socket to accept connections
+      ansible.builtin.wait_for:
+        path: /run/cups/cups.sock
+        timeout: 30
+
     - name: Allow remote administration and printer sharing in CUPS
       ansible.builtin.command:
         cmd: cupsctl --remote-admin --remote-any --share-printers
