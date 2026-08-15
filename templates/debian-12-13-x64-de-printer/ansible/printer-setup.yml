@@ -16,8 +16,16 @@
   hosts: all
   become: true
   vars:
-    printer_persona: "HP LaserJet 4250"
-    printer_queue: "HP_LaserJet_4250"
+    # MUSS mit miniprints eigener PJL-Identitaet uebereinstimmen. miniprint gibt auf
+    # "@PJL INFO ID" den in Printer.__init__ fest verdrahteten Wert zurueck und bietet
+    # keinen Schalter dafuer (server.py kennt nur -b, -l, -t). Ein abweichender Wert hier
+    # laesst SNMP und die Weboberflaeche ein anderes Geraet behaupten als der Druckerport
+    # - eine Aufklaerung, die beide Quellen vergleicht, sieht den Widerspruch sofort.
+    # Die Richtung ist bewusst: miniprints emulierter Dateibaum IST der einer 4200n
+    # ("Filesystem from HP LaserJet 4200n", printer.py), also ist die 4200 die Wahrheit
+    # dieser Emulation und nicht die 4250. Die Task "PJL-Identitaet ..." unten erzwingt es.
+    printer_persona: "hp LaserJet 4200"
+    printer_queue: "hp_LaserJet_4200"
     printer_location: "Buero 1.OG - Flur"
     printer_contact: "it-support@lab.local"
     printer_serial: "CNBW1234567"
@@ -232,6 +240,31 @@
         version: master
         depth: 1
       notify: Restart miniprint
+
+    - name: Read miniprint's hardcoded PJL identity
+      ansible.builtin.command:
+        cmd: "grep -oP 'printer_id=\"\\K[^\"]+' {{ miniprint_dir }}/printer.py"
+      register: miniprint_id
+      changed_when: false
+      # Findet grep nichts (upstream hat den Vorgabewert entfernt oder umbenannt), waere der
+      # Abbruch sonst ein nacktes rc=1. So faellt stdout leer aus und die Zusicherung unten
+      # erklaert, was fehlt.
+      failed_when: false
+
+    # Ohne diese Wache faellt ein Auseinanderlaufen erst dem Angreifer auf: SNMP und die
+    # Weboberflaeche sagen das eine, "@PJL INFO ID" das andere. Sie greift sowohl, wenn
+    # jemand printer_persona aendert, als auch wenn upstream seine Vorgabe verschiebt.
+    - name: Fail if the persona and miniprint's PJL identity disagree
+      ansible.builtin.assert:
+        that: miniprint_id.stdout | trim == printer_persona
+        fail_msg: >-
+          Persona und PJL-Identitaet weichen ab: printer_persona ist
+          "{{ printer_persona }}", miniprint meldet auf "@PJL INFO ID" aber
+          "{{ miniprint_id.stdout | trim }}". SNMP (sysDescr), die Weboberflaeche und der
+          Druckerport wuerden verschiedene Geraete behaupten. Entweder printer_persona auf
+          den gemeldeten Wert setzen oder printer.py anpassen.
+        success_msg: >-
+          Persona und PJL-Identitaet stimmen ueberein ("{{ printer_persona }}").
 
     - name: Create the miniprint log directory
       ansible.builtin.file:
